@@ -41,13 +41,13 @@
     return overdue ? 'overdue' : due ? 'due' : 'ok';
   }
   function totalCost(vehicleId, f) {
-    const fuel = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && inRange(r.date, f)).reduce((s, r) => s + num(r.amount), 0);
+    const fuel = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && FleetRules.isTrustedFuelLog(r) && inRange(r.date, f)).reduce((s, r) => s + num(r.amount), 0);
     const pm = DB.list('pmRecords').filter(r => r.vehicleId === vehicleId && inRange(r.serviceDate, f)).reduce((s, r) => s + num(r.totalCost), 0);
     const bd = DB.list('breakdowns').filter(r => r.vehicleId === vehicleId && inRange(r.reportedAt, f)).reduce((s, r) => s + num(r.totalCost), 0);
     return fuel + pm + bd;
   }
   function fuelStats(vehicleId, f) {
-    const logs = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && inRange(r.date, f)).sort((a, b) => num(a.odometer) - num(b.odometer));
+    const logs = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && FleetRules.isTrustedFuelLog(r) && inRange(r.date, f)).sort((a, b) => num(a.odometer) - num(b.odometer));
     const qty = logs.reduce((s, r) => s + num(r.qty), 0);
     const amount = logs.reduce((s, r) => s + num(r.amount), 0);
     const km = logs.length > 1 ? Math.max(0, num(logs[logs.length - 1].odometer) - num(logs[0].odometer)) : 0;
@@ -99,7 +99,7 @@
     const pmOver = pm.filter(p => pmState(p) === 'overdue').length;
     const docs = byVehicle(DB.list('documents'), vehicles);
     const bucket = n => docs.filter(d => App.daysUntil(d.expiryDate) != null && App.daysUntil(d.expiryDate) <= n && App.daysUntil(d.expiryDate) >= 0).length;
-    const fuel = byVehicle(DB.list('fuelLogs').filter(r => inRange(r.date, filters) && (!filters.vendor || r.vendorId === filters.vendor)), vehicles);
+    const fuel = byVehicle(DB.list('fuelLogs').filter(r => FleetRules.isTrustedFuelLog(r) && inRange(r.date, filters) && (!filters.vendor || r.vendorId === filters.vendor)), vehicles);
     const pmRecords = byVehicle(DB.list('pmRecords').filter(r => inRange(r.serviceDate, filters) && (!filters.vendor || r.vendorId === filters.vendor)), vehicles);
     const breakdowns = byVehicle(DB.list('breakdowns').filter(r => inRange(r.reportedAt, filters) && (!filters.vendor || r.assignedVendorId === filters.vendor)), vehicles);
     const openBreakdowns = breakdowns.filter(b => b.status !== 'closed').length;
@@ -110,7 +110,7 @@
     const tiles = App.el('<div class="grid cols-4 mb-1"></div>');
     tiles.innerHTML = [
       tile('Vehicles in filtered fleet', vehicles.length, '', '#/vehicles', Object.keys(statusCounts).map(k => k + ': ' + statusCounts[k]).join(', ')),
-      tile('Ambulances available now', ambs.filter(v => v.status === 'available' && (!latestReadiness(v.id) || latestReadiness(v.id).result === 'pass')).length, 'ok', '#/trips'),
+      tile('Ambulances available now', ambs.filter(v => v.status === 'available' && FleetRules.readinessPassesForDate(latestReadiness(v.id), isoToday())).length, 'ok', '#/trips'),
       tile('Ambulances under maintenance', ambs.filter(v => v.status === 'under maintenance').length, 'warn', '#/maintenance'),
       tile('Vehicles on trip', vehicles.filter(v => v.status === 'on trip').length, 'info', '#/trips'),
       tile('PM due', pmDue, pmDue ? 'warn' : 'ok', '#/maintenance'),
@@ -146,5 +146,6 @@
     ], rows: summaries, empty: 'No fuel records.' }));
     grid.appendChild(high); grid.appendChild(eff); container.appendChild(grid);
   }
-  App.registerModule({ id: 'dashboard', title: 'Dashboard', order: 1, render: render });
+  App.registerModule({ id: 'dashboard', title: 'Dashboard', order: 1,
+    roles: ['Transport Manager','Ambulance Coordinator','Maintenance Team','Finance User','Management Viewer'], render: render });
 })();

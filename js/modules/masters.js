@@ -53,6 +53,11 @@
 
   function norm(v) { return (v == null ? '' : String(v)).trim().toLowerCase(); }
 
+  async function persist(action, successMessage, onDone) {
+    try { await action(); App.toast(successMessage); if (onDone) onDone(); }
+    catch (error) { App.toast(error.message, true); }
+  }
+
   function statusBadge(s) { return App.badge(s || '—', s); }
 
   function driverForVehicle(vehicleId) {
@@ -189,7 +194,7 @@
                 editBtn.addEventListener('click', function () { openVehicleForm(r, paint); });
                 var delBtn = App.el('<button class="btn small danger">Delete</button>');
                 delBtn.addEventListener('click', function () {
-                  confirmDelete(r.regNo + ' (' + r.assetCode + ')', function () { DB.softDelete('vehicles', r.id); App.toast('Vehicle deleted'); paint(); });
+                  confirmDelete(r.regNo + ' (' + r.assetCode + ')', function () { persist(function () { return DB.softDelete('vehicles', r.id); }, 'Vehicle deleted', paint); });
                 });
                 wrap.appendChild(editBtn);
                 wrap.appendChild(delBtn);
@@ -273,12 +278,14 @@
       actions: [
         { label: 'Cancel', cls: 'ghost' },
         {
-          label: existing ? 'Save' : 'Add Vehicle', onClick: function (close) {
+          label: existing ? 'Save' : 'Add Vehicle', onClick: async function (close) {
             if (!f.validate()) return;
             var data = f.read();
-            if (existing) { DB.update('vehicles', existing.id, data); App.toast('Vehicle updated'); }
-            else { DB.insert('vehicles', data); App.toast('Vehicle added'); }
-            close(); onDone && onDone();
+            try {
+              if (existing) await DB.update('vehicles', existing.id, data);
+              else await DB.insert('vehicles', data);
+              App.toast(existing ? 'Vehicle updated' : 'Vehicle added'); close(); onDone && onDone();
+            } catch (error) { App.toast(error.message, true); }
           },
         },
       ],
@@ -349,7 +356,7 @@
               var editBtn = App.el('<button class="btn small ghost">Edit</button>');
               editBtn.addEventListener('click', function () { openDriverForm(r, paint); });
               var delBtn = App.el('<button class="btn small danger">Delete</button>');
-              delBtn.addEventListener('click', function () { confirmDelete(r.name, function () { DB.softDelete('drivers', r.id); App.toast('Driver deleted'); paint(); }); });
+              delBtn.addEventListener('click', function () { confirmDelete(r.name, function () { persist(function () { return DB.softDelete('drivers', r.id); }, 'Driver deleted', paint); }); });
               wrap.appendChild(editBtn); wrap.appendChild(delBtn);
               return wrap;
             },
@@ -404,12 +411,14 @@
       actions: [
         { label: 'Cancel', cls: 'ghost' },
         {
-          label: existing ? 'Save' : 'Add Driver', onClick: function (close) {
+          label: existing ? 'Save' : 'Add Driver', onClick: async function (close) {
             if (!f.validate()) return;
             var data = f.read();
-            if (existing) { DB.update('drivers', existing.id, data); App.toast('Driver updated'); }
-            else { DB.insert('drivers', data); App.toast('Driver added'); }
-            close(); onDone && onDone();
+            try {
+              if (existing) await DB.update('drivers', existing.id, data);
+              else await DB.insert('drivers', data);
+              App.toast(existing ? 'Driver updated' : 'Driver added'); close(); onDone && onDone();
+            } catch (error) { App.toast(error.message, true); }
           },
         },
       ],
@@ -456,7 +465,7 @@
         return true;
       }).sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
 
-      var canEdit = App.can('masters.edit') || App.can('vendor.update');
+      var canEdit = App.can('masters.edit');
       var tbl = buildTable({
         columns: [
           { key: 'name', label: 'Name' },
@@ -473,7 +482,7 @@
               var editBtn = App.el('<button class="btn small ghost">Edit</button>');
               editBtn.addEventListener('click', function () { openVendorForm(r, paint); });
               var delBtn = App.el('<button class="btn small danger">Delete</button>');
-              delBtn.addEventListener('click', function () { confirmDelete(r.name, function () { DB.softDelete('vendors', r.id); App.toast('Vendor deleted'); paint(); }); });
+              delBtn.addEventListener('click', function () { confirmDelete(r.name, function () { persist(function () { return DB.softDelete('vendors', r.id); }, 'Vendor deleted', paint); }); });
               wrap.appendChild(editBtn); wrap.appendChild(delBtn);
               return wrap;
             },
@@ -495,6 +504,7 @@
   }
 
   function openVendorForm(existing, onDone) {
+    if (!App.can('masters.edit')) return App.toast('You do not have permission to manage vendor master data.', true);
     var fields = [
       { name: 'name', label: 'Vendor Name', required: true },
       { name: 'type', label: 'Vendor Type', type: 'select', options: VENDOR_TYPES, required: true },
@@ -521,12 +531,14 @@
       actions: [
         { label: 'Cancel', cls: 'ghost' },
         {
-          label: existing ? 'Save' : 'Add Vendor', onClick: function (close) {
+          label: existing ? 'Save' : 'Add Vendor', onClick: async function (close) {
             if (!f.validate()) return;
             var data = f.read();
-            if (existing) { DB.update('vendors', existing.id, data); App.toast('Vendor updated'); }
-            else { DB.insert('vendors', data); App.toast('Vendor added'); }
-            close(); onDone && onDone();
+            try {
+              if (existing) await DB.update('vendors', existing.id, data);
+              else await DB.insert('vendors', data);
+              App.toast(existing ? 'Vendor updated' : 'Vendor added'); close(); onDone && onDone();
+            } catch (error) { App.toast(error.message, true); }
           },
         },
       ],
@@ -612,14 +624,14 @@
         kvRow('Ownership', App.esc(vehicle.ownership)),
         kvRow('Department', App.esc(vehicle.department)),
         kvRow('Base Location', App.esc(vehicle.baseLocation)),
-        kvRow('Seating / Load Capacity', [vehicle.seating ? vehicle.seating + ' seats' : null, vehicle.loadCapacity].filter(Boolean).join(' · ') || null),
+        kvRow('Seating / Load Capacity', FleetRules.safeTextJoin([vehicle.seating ? vehicle.seating + ' seats' : null, vehicle.loadCapacity], ' · ') || null),
         kvRow('Tank Capacity', vehicle.tankCapacity ? vehicle.tankCapacity + ' L' : null),
         kvRow('Mileage Benchmark', vehicle.mileageBenchmark ? App.fmtNum(vehicle.mileageBenchmark) + ' km/l' : null),
         kvRow('Purchase Date / Cost', (vehicle.purchaseDate ? App.fmtDate(vehicle.purchaseDate) : '—') + ' / ' + App.fmtINR(vehicle.purchaseCost)),
         kvRow('Vendor / Dealer', App.esc(vehicle.vendor)),
         kvRow('Call Sign', App.esc(vehicle.callSign)),
         kvRow('Emergency Phone', App.esc(vehicle.emergencyPhone)),
-        kvRow('GPS Device / FASTag', [vehicle.gpsDeviceId, vehicle.fastagId].filter(Boolean).join(' / ') || null),
+        kvRow('GPS Device / FASTag', FleetRules.safeTextJoin([vehicle.gpsDeviceId, vehicle.fastagId], ' / ') || null),
         kvRow('Insurance Provider', App.esc(vehicle.insuranceProvider)),
         kvRow('Pollution Category', App.esc(vehicle.pollutionCategory)),
         kvRow('Notes', App.esc(vehicle.notes)),
@@ -749,14 +761,14 @@
       var fuelLogs = DB.list('fuelLogs', function (f) { return f.vehicleId === vehicle.id; });
       var pmRecs = DB.list('pmRecords', function (r) { return r.vehicleId === vehicle.id; });
       var bds = DB.list('breakdowns', function (b) { return b.vehicleId === vehicle.id; });
-      var fuelCost = fuelLogs.reduce(function (s, f) { return s + (Number(f.amount) || 0); }, 0);
+      var fuelCost = fuelLogs.filter(FleetRules.isTrustedFuelLog).reduce(function (s, f) { return s + (Number(f.amount) || 0); }, 0);
       var pmCost = pmRecs.reduce(function (s, r) { return s + (Number(r.totalCost) || 0); }, 0);
       var bdCost = bds.reduce(function (s, b) { return s + (Number(b.totalCost) || 0); }, 0);
       var total = fuelCost + pmCost + bdCost;
       var costPerKm = vehicle.odometer ? total / vehicle.odometer : null;
 
       var allVehicleTotals = DB.list('vehicles').map(function (v) {
-        var fc = DB.list('fuelLogs', function (f) { return f.vehicleId === v.id; }).reduce(function (s, f) { return s + (Number(f.amount) || 0); }, 0);
+        var fc = DB.list('fuelLogs', function (f) { return f.vehicleId === v.id && FleetRules.isTrustedFuelLog(f); }).reduce(function (s, f) { return s + (Number(f.amount) || 0); }, 0);
         var pc = DB.list('pmRecords', function (r) { return r.vehicleId === v.id; }).reduce(function (s, r) { return s + (Number(r.totalCost) || 0); }, 0);
         var bc = DB.list('breakdowns', function (b) { return b.vehicleId === v.id; }).reduce(function (s, b) { return s + (Number(b.totalCost) || 0); }, 0);
         return { id: v.id, total: fc + pc + bc };
@@ -837,6 +849,7 @@
     id: 'vehicles',
     title: 'Fleet Register',
     order: 2,
+    roles: ['Transport Manager','Ambulance Coordinator','Maintenance Team','Finance User','Management Viewer'],
     render: function (container, params) {
       var sub = params && params[0];
       if (!sub) return renderVehicleList(container);

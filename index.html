@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/brand.css">
+<link rel="stylesheet" href="css/brand.css?v=20260718b">
 </head>
 <body>
 <header class="app-header">
@@ -16,29 +16,30 @@
       <h1 class="brand-title">SSSIHMS Fleet</h1>
       <p class="brand-sub">Transport &amp; Ambulance Management · Sri Sathya Sai Institute of Higher Medical Sciences, Whitefield</p>
     </div>
-    <div class="header-right">
-      <label class="role-label">Role
-        <select id="role-switcher"></select>
-      </label>
+    <div class="header-right" id="session-controls" hidden>
+      <div class="signed-in-user" id="signed-in-user"></div>
+      <button class="btn small ghost" id="password-button" type="button">Change password</button>
+      <button class="btn small ghost" id="logout-button" type="button">Sign out</button>
     </div>
   </div>
   <nav class="app-nav" id="app-nav"></nav>
 </header>
 <main id="app-main" class="app-main"></main>
-<footer class="app-footer">Prototype — data stored locally in this browser. All care at SSSIHMS is free of charge.</footer>
+<footer class="app-footer">Secure hospital fleet system · All care at SSSIHMS is free of charge.</footer>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
-<script src="js/db.js"></script>
-<script src="js/app.js"></script>
+<script src="js/db.js?v=20260718b"></script>
+<script src="js/rules.js?v=20260718b"></script>
+<script src="js/app.js?v=20260718b"></script>
 <!-- Feature modules (each registers itself with App.registerModule) -->
-<script src="js/modules/dashboard.js"></script>
-<script src="js/modules/masters.js"></script>
-<script src="js/modules/trips.js"></script>
-<script src="js/modules/fuel.js"></script>
-<script src="js/modules/maintenance.js"></script>
-<script src="js/modules/compliance.js"></script>
-<script src="js/modules/reports.js"></script>
-<script>App.start();</script>
+<script src="js/modules/dashboard.js?v=20260718b"></script>
+<script src="js/modules/masters.js?v=20260718b"></script>
+<script src="js/modules/trips.js?v=20260718b"></script>
+<script src="js/modules/fuel.js?v=20260718b"></script>
+<script src="js/modules/maintenance.js?v=20260718b"></script>
+<script src="js/modules/compliance.js?v=20260718b"></script>
+<script src="js/modules/reports.js?v=20260718b"></script>
+<script src="js/bootstrap.js?v=20260718b"></script>
 </body>
 </html>
