@@ -7,6 +7,10 @@ const FLEET_COLLECTIONS = [
     'vehicles', 'drivers', 'vendors', 'trips', 'fuelLogs', 'pmSchedules',
     'pmRecords', 'breakdowns', 'documents', 'readinessChecks', 'auditLog'
 ];
+const FLEET_ROLES = [
+    'Fleet Administrator', 'Transport Manager', 'Ambulance Coordinator', 'Driver',
+    'Maintenance Team', 'Finance User', 'Vendor', 'Management Viewer'
+];
 
 function fleet_db(): PDO
 {
@@ -216,4 +220,79 @@ function fleet_public_user(array $user): array
         'role' => $user['role'], 'actorId' => $user['actor_id'], 'vendorId' => $user['vendor_id'],
         'mustChangePassword' => (bool)($user['must_change_password'] ?? false),
     ];
+}
+
+function fleet_require_admin(array $user): void
+{
+    if ($user['role'] !== 'Fleet Administrator') fleet_error('Administrator access required.', 403, 'forbidden');
+}
+
+function fleet_managed_user(int $id): ?array
+{
+    $stmt = fleet_db()->prepare('SELECT id, username, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users WHERE id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    return $stmt->fetch() ?: null;
+}
+
+function fleet_public_managed_user(array $user): array
+{
+    return [
+        'id' => (int)$user['id'],
+        'username' => $user['username'],
+        'displayName' => $user['display_name'],
+        'role' => $user['role'],
+        'actorId' => $user['actor_id'],
+        'vendorId' => $user['vendor_id'],
+        'active' => (bool)$user['active'],
+        'mustChangePassword' => (bool)$user['must_change_password'],
+        'createdAt' => $user['created_at'],
+        'updatedAt' => $user['updated_at'],
+    ];
+}
+
+function fleet_validate_managed_user(array $input, ?int $existingId = null): array
+{
+    $username = strtolower(trim((string)($input['username'] ?? '')));
+    $displayName = trim((string)($input['displayName'] ?? ''));
+    $role = trim((string)($input['role'] ?? ''));
+    $actorId = trim((string)($input['actorId'] ?? '')) ?: null;
+    $vendorId = trim((string)($input['vendorId'] ?? '')) ?: null;
+    $active = filter_var($input['active'] ?? true, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+
+    if (!preg_match('/^[a-z0-9][a-z0-9._-]{2,79}$/', $username)) {
+        fleet_error('Username must be 3–80 lowercase letters, numbers, dots, underscores or hyphens.', 422, 'validation_failed');
+    }
+    if (strlen($displayName) < 2 || strlen($displayName) > 160) {
+        fleet_error('Display name must be 2–160 characters.', 422, 'validation_failed');
+    }
+    if (!in_array($role, FLEET_ROLES, true)) fleet_error('Unknown role.', 422, 'validation_failed');
+    if ($active === null) fleet_error('Active must be true or false.', 422, 'validation_failed');
+
+    if ($role === 'Driver') {
+        if (!$actorId || !fleet_record('drivers', $actorId)) fleet_error('Select a valid driver record.', 422, 'invalid_driver_link');
+        $vendorId = null;
+    } elseif ($role === 'Vendor') {
+        if (!$vendorId || !fleet_record('vendors', $vendorId)) fleet_error('Select a valid vendor record.', 422, 'invalid_vendor_link');
+        $actorId = null;
+    } else {
+        $actorId = null;
+        $vendorId = null;
+    }
+
+    $duplicate = fleet_db()->prepare('SELECT id FROM fleet_users WHERE username = ? AND (? IS NULL OR id <> ?) LIMIT 1');
+    $duplicate->execute([$username, $existingId, $existingId]);
+    if ($duplicate->fetch()) fleet_error('Username is already in use.', 409, 'duplicate_username');
+
+    if ($actorId || $vendorId) {
+        $link = fleet_db()->prepare('SELECT id FROM fleet_users WHERE ((? IS NOT NULL AND actor_id = ?) OR (? IS NOT NULL AND vendor_id = ?)) AND (? IS NULL OR id <> ?) LIMIT 1');
+        $link->execute([$actorId, $actorId, $vendorId, $vendorId, $existingId, $existingId]);
+        if ($link->fetch()) fleet_error('That driver or vendor is already linked to another user.', 409, 'duplicate_identity_link');
+    }
+
+    return compact('username', 'displayName', 'role', 'actorId', 'vendorId', 'active');
+}
+
+function fleet_temporary_password(): string
+{
+    return bin2hex(random_bytes(12)) . 'A9';
 }

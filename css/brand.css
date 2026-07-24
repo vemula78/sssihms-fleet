@@ -95,6 +95,12 @@ table.data td.num, table.data th.num { text-align: right; }
 .btn.danger { background: var(--danger); border-color: var(--danger); }
 .btn.small { font-size: .78rem; padding: .3rem .6rem; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
+.row-actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+.credential-panel { max-width: 620px; }
+.temporary-password { padding: .9rem 1rem; border: 1px dashed var(--brand-accent); border-radius: 6px;
+  background: var(--brand-accent-soft); overflow-wrap: anywhere; user-select: all; }
+.temporary-password code { font-size: 1.05rem; color: var(--brand-heading); }
+.user-help { margin-top: .8rem; font-size: .82rem; }
 
 /* Filter bar */
 .filter-bar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin-bottom: 1rem;

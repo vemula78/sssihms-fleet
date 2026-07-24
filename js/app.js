@@ -126,7 +126,7 @@
       });
       tbl.appendChild(tbody); wrap.appendChild(tbl); return wrap;
     },
-    modal({ title, body, actions }) {
+    modal({ title, body, actions, dismissible = true }) {
       const root = document.getElementById('modal-root');
       const backdrop = App.el('<div class="modal-backdrop"></div>');
       const box = App.el('<div class="modal"><h2>' + App.esc(title) + '</h2><div class="modal-body"></div><div class="modal-actions"></div></div>');
@@ -139,7 +139,7 @@
         b.addEventListener('click', () => a.onClick ? a.onClick(close) : close());
         actEl.appendChild(b);
       });
-      backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+      backdrop.addEventListener('click', e => { if (dismissible && e.target === backdrop) close(); });
       backdrop.appendChild(box); root.appendChild(backdrop);
       return close;
     },
@@ -235,7 +235,7 @@
       document.getElementById('session-controls').hidden = false;
       document.getElementById('password-button').addEventListener('click', () => passwordModal(false));
       document.getElementById('logout-button').addEventListener('click', async () => {
-        try { await DB.logout(); location.hash = ''; location.reload(); }
+        try { await DB.logout(); location.replace(location.pathname + location.search); }
         catch (error) { App.toast(error.message, true); }
       });
       window.addEventListener('hashchange', render);
@@ -298,6 +298,7 @@
     ]);
     App.modal({
       title: required ? 'Set a new password to secure this account' : 'Change password', body: form.el,
+      dismissible: !required,
       actions: [
         { label: required ? 'Sign out' : 'Cancel', cls: 'ghost', onClick: async close => {
           if (!required) { close(); return; }

@@ -93,6 +93,18 @@
       const payload = await request('settings', { method: 'PATCH', body: patch });
       store.settings = payload.settings; return store.settings;
     },
+    async listUsers() {
+      return (await request('users')).users;
+    },
+    async createUser(data) {
+      return request('users', { method: 'POST', body: data });
+    },
+    async updateUser(id, data) {
+      return request('users/' + encodeURIComponent(id), { method: 'PATCH', body: data });
+    },
+    async resetUserPassword(id) {
+      return request('users/' + encodeURIComponent(id) + '/reset-password', { method: 'POST', body: {} });
+    },
   };
 
   window.DB = DB;

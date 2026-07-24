@@ -81,6 +81,10 @@ try {
         fleet_json(['ok' => true]);
     }
 
+    if ((bool)($user['must_change_password'] ?? false) && !in_array($method, ['GET', 'HEAD'], true)) {
+        fleet_error('Change your temporary password before making changes.', 403, 'password_change_required');
+    }
+
     if ($route === 'bootstrap' && $method === 'GET') {
         $store = [];
         foreach (FLEET_COLLECTIONS as $collection) $store[$collection] = [];
@@ -127,6 +131,70 @@ try {
         fleet_db()->prepare('INSERT INTO fleet_settings (settings_id, data_json, updated_at) VALUES (1, ?, NOW(6)) ON DUPLICATE KEY UPDATE data_json = VALUES(data_json), updated_at = NOW(6)')->execute([json_encode($new, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)]);
         fleet_audit($user, 'edited', 'settings', '1', $old, $new);
         fleet_json(['settings' => $new]);
+    }
+
+    if ($route === 'users' && $method === 'GET') {
+        fleet_require_admin($user);
+        $rows = fleet_db()->query('SELECT id, username, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users ORDER BY active DESC, display_name, username')->fetchAll();
+        fleet_json(['users' => array_map('fleet_public_managed_user', $rows)]);
+    }
+
+    if ($route === 'users' && $method === 'POST') {
+        fleet_require_csrf();
+        fleet_require_admin($user);
+        $data = fleet_validate_managed_user(fleet_input());
+        $temporaryPassword = fleet_temporary_password();
+        $stmt = fleet_db()->prepare('INSERT INTO fleet_users (username, password_hash, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(6), NOW(6))');
+        $stmt->execute([
+            $data['username'], password_hash($temporaryPassword, PASSWORD_DEFAULT), $data['displayName'],
+            $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0,
+        ]);
+        $created = fleet_managed_user((int)fleet_db()->lastInsertId());
+        $public = fleet_public_managed_user($created);
+        fleet_audit($user, 'user created', 'users', (string)$created['id'], null, $public);
+        fleet_json(['user' => $public, 'temporaryPassword' => $temporaryPassword], 201);
+    }
+
+    if (preg_match('#^users/(\d+)(?:/(reset-password))?$#', $route, $match)) {
+        fleet_require_admin($user);
+        $targetId = (int)$match[1];
+        $target = fleet_managed_user($targetId);
+        if (!$target) fleet_error('User not found.', 404, 'not_found');
+
+        if ($method === 'PATCH' && empty($match[2])) {
+            fleet_require_csrf();
+            $input = fleet_input();
+            $merged = [
+                'username' => $target['username'],
+                'displayName' => $input['displayName'] ?? $target['display_name'],
+                'role' => $input['role'] ?? $target['role'],
+                'actorId' => array_key_exists('actorId', $input) ? $input['actorId'] : $target['actor_id'],
+                'vendorId' => array_key_exists('vendorId', $input) ? $input['vendorId'] : $target['vendor_id'],
+                'active' => array_key_exists('active', $input) ? $input['active'] : (bool)$target['active'],
+            ];
+            $data = fleet_validate_managed_user($merged, $targetId);
+            if ($targetId === (int)$user['id'] && (!$data['active'] || $data['role'] !== 'Fleet Administrator')) {
+                fleet_error('You cannot disable or remove administrator access from your own account.', 409, 'self_lockout_prevented');
+            }
+            $old = fleet_public_managed_user($target);
+            fleet_db()->prepare('UPDATE fleet_users SET display_name = ?, role = ?, actor_id = ?, vendor_id = ?, active = ?, updated_at = NOW(6) WHERE id = ?')->execute([
+                $data['displayName'], $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0, $targetId,
+            ]);
+            $updated = fleet_public_managed_user(fleet_managed_user($targetId));
+            fleet_audit($user, 'user updated', 'users', (string)$targetId, $old, $updated);
+            fleet_json(['user' => $updated]);
+        }
+
+        if ($method === 'POST' && ($match[2] ?? '') === 'reset-password') {
+            fleet_require_csrf();
+            if ($targetId === (int)$user['id']) fleet_error('Use Change password for your own account.', 409, 'self_reset_prevented');
+            $temporaryPassword = fleet_temporary_password();
+            fleet_db()->prepare('UPDATE fleet_users SET password_hash = ?, must_change_password = 1, updated_at = NOW(6) WHERE id = ?')->execute([
+                password_hash($temporaryPassword, PASSWORD_DEFAULT), $targetId,
+            ]);
+            fleet_audit($user, 'password reset', 'users', (string)$targetId, null, null);
+            fleet_json(['user' => fleet_public_managed_user(fleet_managed_user($targetId)), 'temporaryPassword' => $temporaryPassword]);
+        }
     }
 
     if (preg_match('#^records/([A-Za-z]+)/?([A-Za-z0-9_-]+)?$#', $route, $m)) {
