@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS fleet_users (
   username VARCHAR(80) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(160) NOT NULL,
+  email VARCHAR(254) NULL,
   role VARCHAR(80) NOT NULL,
   actor_id VARCHAR(64) NULL,
   vendor_id VARCHAR(64) NULL,
@@ -11,7 +12,8 @@ CREATE TABLE IF NOT EXISTS fleet_users (
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY fleet_users_username_uq (username)
+  UNIQUE KEY fleet_users_username_uq (username),
+  UNIQUE KEY fleet_users_email_uq (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS fleet_records (

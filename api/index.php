@@ -96,7 +96,9 @@ try {
             }
         }
         if ($user['role'] !== 'Vendor' && $user['role'] !== 'Driver') {
-            $audit = fleet_db()->query('SELECT id, username AS user, created_at AS timestamp, action_name AS action, collection_name AS entityType, record_id AS entityId, old_json AS oldValue, new_json AS newValue FROM fleet_audit ORDER BY id DESC LIMIT 2000');
+            $auditSql = 'SELECT id, username AS user, created_at AS timestamp, action_name AS action, collection_name AS entityType, record_id AS entityId, old_json AS oldValue, new_json AS newValue FROM fleet_audit';
+            if ($user['role'] !== 'Fleet Administrator') $auditSql .= " WHERE collection_name <> 'users'";
+            $audit = fleet_db()->query($auditSql . ' ORDER BY id DESC LIMIT 2000');
             $store['auditLog'] = $audit->fetchAll();
         }
         $settingsRow = fleet_db()->query('SELECT data_json FROM fleet_settings WHERE settings_id = 1')->fetch();
@@ -135,7 +137,7 @@ try {
 
     if ($route === 'users' && $method === 'GET') {
         fleet_require_admin($user);
-        $rows = fleet_db()->query('SELECT id, username, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users ORDER BY active DESC, display_name, username')->fetchAll();
+        $rows = fleet_db()->query('SELECT id, username, display_name, email, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users ORDER BY active DESC, display_name, username')->fetchAll();
         fleet_json(['users' => array_map('fleet_public_managed_user', $rows)]);
     }
 
@@ -144,10 +146,10 @@ try {
         fleet_require_admin($user);
         $data = fleet_validate_managed_user(fleet_input());
         $temporaryPassword = fleet_temporary_password();
-        $stmt = fleet_db()->prepare('INSERT INTO fleet_users (username, password_hash, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(6), NOW(6))');
+        $stmt = fleet_db()->prepare('INSERT INTO fleet_users (username, password_hash, display_name, email, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(6), NOW(6))');
         $stmt->execute([
             $data['username'], password_hash($temporaryPassword, PASSWORD_DEFAULT), $data['displayName'],
-            $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0,
+            $data['email'], $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0,
         ]);
         $created = fleet_managed_user((int)fleet_db()->lastInsertId());
         $public = fleet_public_managed_user($created);
@@ -167,6 +169,7 @@ try {
             $merged = [
                 'username' => $target['username'],
                 'displayName' => $input['displayName'] ?? $target['display_name'],
+                'email' => array_key_exists('email', $input) ? $input['email'] : $target['email'],
                 'role' => $input['role'] ?? $target['role'],
                 'actorId' => array_key_exists('actorId', $input) ? $input['actorId'] : $target['actor_id'],
                 'vendorId' => array_key_exists('vendorId', $input) ? $input['vendorId'] : $target['vendor_id'],
@@ -177,8 +180,8 @@ try {
                 fleet_error('You cannot disable or remove administrator access from your own account.', 409, 'self_lockout_prevented');
             }
             $old = fleet_public_managed_user($target);
-            fleet_db()->prepare('UPDATE fleet_users SET display_name = ?, role = ?, actor_id = ?, vendor_id = ?, active = ?, updated_at = NOW(6) WHERE id = ?')->execute([
-                $data['displayName'], $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0, $targetId,
+            fleet_db()->prepare('UPDATE fleet_users SET display_name = ?, email = ?, role = ?, actor_id = ?, vendor_id = ?, active = ?, updated_at = NOW(6) WHERE id = ?')->execute([
+                $data['displayName'], $data['email'], $data['role'], $data['actorId'], $data['vendorId'], $data['active'] ? 1 : 0, $targetId,
             ]);
             $updated = fleet_public_managed_user(fleet_managed_user($targetId));
             fleet_audit($user, 'user updated', 'users', (string)$targetId, $old, $updated);

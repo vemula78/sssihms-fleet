@@ -33,12 +33,15 @@ Transport and ambulance fleet management for SSSIHMS Whitefield. The browser app
 
 Fleet Administrators can open **Users & Roles** from the main navigation:
 
-1. Select **Create user**, enter a unique username and display name, then assign a role.
+1. Select **Create user**, enter a unique username and display name, optionally add an email address, then assign a role.
 2. Driver accounts must be linked to one active Driver master record; Vendor accounts must be linked to one active Vendor master record.
 3. Save the one-time temporary password immediately. It cannot be retrieved later.
 4. Give the password to the user through an approved secure channel. The account must change it at first sign-in before making any data changes.
 
 Administrators can subsequently edit or disable an account and issue a new one-time password. They cannot disable, demote, or administratively reset their own account.
+Email is stored as an optional contact field. It does not change username login or send messages.
+
+For deployments installed before the email field was added, run `php api/bin/migrate-user-email.php` after backing up the database and before replacing the application files.
 
 ## Validation
 

@@ -42,6 +42,8 @@
     const form = App.form([
       { name: 'username', label: 'Username', required: true, hint: 'Lowercase letters, numbers, dots, underscores or hyphens' },
       { name: 'displayName', label: 'Display name', required: true },
+      { name: 'email', label: 'Email address', type: 'email', hint: 'Optional contact email for this account',
+        validate: value => value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? 'Enter a valid email address' : null },
       { name: 'role', label: 'Role', type: 'select', options: ASSIGNABLE_ROLES, required: true },
       { name: 'actorId', label: 'Linked driver', type: 'select', options: drivers },
       { name: 'vendorId', label: 'Linked vendor', type: 'select', options: vendors },
@@ -141,6 +143,7 @@
         columns: [
           { key: 'username', label: 'Username' },
           { key: 'displayName', label: 'Name' },
+          { key: 'email', label: 'Email' },
           { key: 'role', label: 'Role', render: u => App.badge(u.role, 'info') },
           { key: 'identity', label: 'Linked record', render: u => App.esc(linkedIdentity(u)) },
           { key: 'active', label: 'Status', render: u => App.badge(u.active ? 'active' : 'inactive') },

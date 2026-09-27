@@ -229,7 +229,7 @@ function fleet_require_admin(array $user): void
 
 function fleet_managed_user(int $id): ?array
 {
-    $stmt = fleet_db()->prepare('SELECT id, username, display_name, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users WHERE id = ? LIMIT 1');
+    $stmt = fleet_db()->prepare('SELECT id, username, display_name, email, role, actor_id, vendor_id, active, must_change_password, created_at, updated_at FROM fleet_users WHERE id = ? LIMIT 1');
     $stmt->execute([$id]);
     return $stmt->fetch() ?: null;
 }
@@ -240,6 +240,7 @@ function fleet_public_managed_user(array $user): array
         'id' => (int)$user['id'],
         'username' => $user['username'],
         'displayName' => $user['display_name'],
+        'email' => $user['email'],
         'role' => $user['role'],
         'actorId' => $user['actor_id'],
         'vendorId' => $user['vendor_id'],
@@ -254,6 +255,7 @@ function fleet_validate_managed_user(array $input, ?int $existingId = null): arr
 {
     $username = strtolower(trim((string)($input['username'] ?? '')));
     $displayName = trim((string)($input['displayName'] ?? ''));
+    $email = strtolower(trim((string)($input['email'] ?? ''))) ?: null;
     $role = trim((string)($input['role'] ?? ''));
     $actorId = trim((string)($input['actorId'] ?? '')) ?: null;
     $vendorId = trim((string)($input['vendorId'] ?? '')) ?: null;
@@ -264,6 +266,9 @@ function fleet_validate_managed_user(array $input, ?int $existingId = null): arr
     }
     if (strlen($displayName) < 2 || strlen($displayName) > 160) {
         fleet_error('Display name must be 2–160 characters.', 422, 'validation_failed');
+    }
+    if ($email !== null && (strlen($email) > 254 || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
+        fleet_error('Enter a valid email address.', 422, 'invalid_email');
     }
     if (!in_array($role, FLEET_ROLES, true)) fleet_error('Unknown role.', 422, 'validation_failed');
     if ($active === null) fleet_error('Active must be true or false.', 422, 'validation_failed');
@@ -283,13 +288,19 @@ function fleet_validate_managed_user(array $input, ?int $existingId = null): arr
     $duplicate->execute([$username, $existingId, $existingId]);
     if ($duplicate->fetch()) fleet_error('Username is already in use.', 409, 'duplicate_username');
 
+    if ($email !== null) {
+        $duplicateEmail = fleet_db()->prepare('SELECT id FROM fleet_users WHERE email = ? AND (? IS NULL OR id <> ?) LIMIT 1');
+        $duplicateEmail->execute([$email, $existingId, $existingId]);
+        if ($duplicateEmail->fetch()) fleet_error('Email is already linked to another user.', 409, 'duplicate_email');
+    }
+
     if ($actorId || $vendorId) {
         $link = fleet_db()->prepare('SELECT id FROM fleet_users WHERE ((? IS NOT NULL AND actor_id = ?) OR (? IS NOT NULL AND vendor_id = ?)) AND (? IS NULL OR id <> ?) LIMIT 1');
         $link->execute([$actorId, $actorId, $vendorId, $vendorId, $existingId, $existingId]);
         if ($link->fetch()) fleet_error('That driver or vendor is already linked to another user.', 409, 'duplicate_identity_link');
     }
 
-    return compact('username', 'displayName', 'role', 'actorId', 'vendorId', 'active');
+    return compact('username', 'displayName', 'email', 'role', 'actorId', 'vendorId', 'active');
 }
 
 function fleet_temporary_password(): string
