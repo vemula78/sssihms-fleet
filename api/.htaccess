@@ -1,0 +1,11 @@
+Options -Indexes
+
+<FilesMatch "^(config\.php|config\.example\.php|install\.sql|seed\.json)$">
+    Require all denied
+</FilesMatch>
+
+RewriteEngine On
+RewriteRule ^bin/ - [F,L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.+)$ index.php?route=$1 [QSA,L]

@@ -60,20 +60,6 @@
     if (driver && App.daysUntil(driver.licenseExpiry) < 0) return false;
     return !hasExpiredCritical('driverId', id, CRITICAL_DRIVER_DOCS);
   }
-  function syncComplianceFlags() {
-    vehicles().forEach(v => {
-      const compliant = isVehicleCompliant(v.id);
-      if (v.complianceStatus !== (compliant ? 'compliant' : 'non-compliant')) {
-        DB.update('vehicles', v.id, { complianceStatus: compliant ? 'compliant' : 'non-compliant' });
-      }
-    });
-    drivers().forEach(d => {
-      const compliant = isDriverCompliant(d.id);
-      if (d.complianceStatus !== (compliant ? 'compliant' : 'non-compliant')) {
-        DB.update('drivers', d.id, { complianceStatus: compliant ? 'compliant' : 'non-compliant' });
-      }
-    });
-  }
   function currentRows() {
     const q = String(state.query || '').trim().toLowerCase();
     return docs().filter(d => {
@@ -94,7 +80,6 @@
     return { total: all.length, expired, expiring, vehNC: vehicles().filter(v => !isVehicleCompliant(v.id)).length, drvNC: drivers().filter(d => !isDriverCompliant(d.id)).length };
   }
   function render(container) {
-    syncComplianceFlags();
     const s = summary();
     container.innerHTML = '<div class="page-title"><div><h2>Compliance</h2><p class="text-muted">Document register, expiry reminders, and assignment compliance checks.</p></div><div class="js-actions"></div></div>';
     const actions = container.querySelector('.js-actions');
@@ -237,7 +222,7 @@
       body: form.el,
       actions: [
         { label: 'Cancel', cls: 'ghost' },
-        { label: 'Save', onClick: c => {
+        { label: 'Save', onClick: async c => {
           if (!App.can('compliance.manage')) return App.toast('You do not have permission to manage compliance documents.', true);
           if (!form.validate()) return;
           const data = form.read();
@@ -249,11 +234,11 @@
           delete data.ownerKind;
           data.reminderThresholds = parseThresholds(data.reminderThresholds);
           data.status = docStatus(data).label;
-          if (record) DB.update('documents', record.id, data);
-          else DB.insert('documents', data);
-          syncComplianceFlags();
-          App.toast(record ? 'Document updated.' : 'Document added.');
-          c(); afterSave();
+          try {
+            if (record) await DB.update('documents', record.id, data);
+            else await DB.insert('documents', data);
+            App.toast(record ? 'Document updated.' : 'Document added.'); c(); afterSave();
+          } catch (error) { App.toast(error.message, true); }
         } }
       ]
     });
@@ -281,12 +266,12 @@
       body: '<p>Delete <strong>' + App.esc(record.docType) + '</strong> for ' + App.esc(ownerLabel(record)) + '?</p>',
       actions: [
         { label: 'Cancel', cls: 'ghost' },
-        { label: 'Delete', cls: 'danger', onClick: close => {
+        { label: 'Delete', cls: 'danger', onClick: async close => {
           if (!App.can('compliance.manage')) return App.toast('You do not have permission to delete compliance documents.', true);
-          DB.softDelete('documents', record.id);
-          syncComplianceFlags();
-          App.toast('Document deleted.');
-          close(); afterDelete();
+          try {
+            await DB.softDelete('documents', record.id);
+            App.toast('Document deleted.'); close(); afterDelete();
+          } catch (error) { App.toast(error.message, true); }
         } }
       ]
     });
@@ -304,5 +289,6 @@
     isDriverCompliant: isDriverCompliant
   };
 
-  App.registerModule({ id: 'compliance', title: 'Compliance', order: 6, render: render });
+  App.registerModule({ id: 'compliance', title: 'Compliance', order: 6,
+    roles: ['Transport Manager','Ambulance Coordinator','Maintenance Team','Management Viewer'], render: render });
 }());

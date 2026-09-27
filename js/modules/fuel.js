@@ -13,12 +13,17 @@
   // ---------- derived calculations ----------
 
   function sortedVehicleLogs(vehicleId) {
-    return DB.list('fuelLogs', l => l.vehicleId === vehicleId)
+    return DB.list('fuelLogs', l => l.vehicleId === vehicleId && FleetRules.isTrustedFuelLog(l))
+      .sort((a, b) => (a.odometer - b.odometer) || String(a.date).localeCompare(String(b.date)));
+  }
+
+  function activeVehicleLogs(vehicleId) {
+    return DB.list('fuelLogs', l => l.vehicleId === vehicleId && l.status !== 'rejected')
       .sort((a, b) => (a.odometer - b.odometer) || String(a.date).localeCompare(String(b.date)));
   }
 
   function lastOdometerForVehicle(vehicleId, excludeId) {
-    const logs = sortedVehicleLogs(vehicleId).filter(l => l.id !== excludeId);
+    const logs = activeVehicleLogs(vehicleId).filter(l => l.id !== excludeId);
     return logs.length ? logs[logs.length - 1].odometer : null;
   }
 
@@ -52,14 +57,19 @@
     return { distanceSinceLast, kmpl, costPerKm };
   }
 
-  function bumpVehicleOdometer(vehicleId, odo) {
+  async function bumpVehicleOdometer(vehicleId, odo) {
     const veh = DB.get('vehicles', vehicleId);
-    if (veh && odo != null && odo > (veh.odometer || 0)) DB.update('vehicles', vehicleId, { odometer: odo });
+    if (veh && odo != null && odo > (veh.odometer || 0)) await DB.update('vehicles', vehicleId, { odometer: odo });
   }
 
   // ---------- entry form ----------
 
   function openFuelForm(existing, onSaved) {
+    if (existing) {
+      if (!App.can('fuel.enter') && !App.can('fuel.verify')) return App.toast('You do not have permission to edit fuel entries.', true);
+    } else if (!App.can('fuel.enter')) {
+      return App.toast('You do not have permission to create fuel entries.', true);
+    }
     const settings = DB.getSettings();
     const vehicles = DB.list('vehicles', v => v.status !== 'retired' || (existing && existing.vehicleId === v.id))
       .sort((a, b) => a.regNo.localeCompare(b.regNo));
@@ -104,6 +114,10 @@
     const values = existing ? Object.assign({}, existing, { date: (existing.date || '').slice(0, 10) })
       : { date: DB.todayISO(), fuelType: 'diesel', paymentMode: 'credit', tankFull: true };
     const f = App.form(fields, values);
+    if (App.currentRole() === 'Driver' && App.identity().actorId) {
+      f.inputs.driverId.input.value = App.identity().actorId;
+      f.inputs.driverId.input.disabled = true;
+    }
 
     const qtyInput = f.inputs.qty.input, rateInput = f.inputs.rate.input, amountInput = f.inputs.amount.input;
     if (!canOverrideAmount) amountInput.readOnly = true;
@@ -132,7 +146,7 @@
       ],
     });
 
-    function trySave(closeFn) {
+    async function trySave(closeFn) {
       if (!f.validate()) return;
       const vals = f.read();
       vals.qty = Number(vals.qty); vals.rate = Number(vals.rate); vals.odometer = Number(vals.odometer);
@@ -159,47 +173,57 @@
       vals.needsApproval = needsApproval;
       vals.enteredBy = existing ? existing.enteredBy : App.currentUser();
 
-      let rec;
-      if (!existing) {
-        vals.logNo = DB.nextNumber('fuel', 'FL');
-        vals.status = 'submitted';
-        rec = DB.insert('fuelLogs', vals);
-        App.toast('Fuel entry ' + rec.logNo + ' saved and submitted for verification.');
-      } else {
-        if (existing.status === 'rejected' || existing.status === 'draft') vals.status = 'submitted';
-        rec = DB.update('fuelLogs', existing.id, vals);
-        App.toast('Fuel entry ' + rec.logNo + ' updated.');
+      try {
+        let rec;
+        if (!existing) {
+          vals.logNo = await DB.nextNumber('fuel', 'FL');
+          vals.status = 'submitted';
+          rec = await DB.insert('fuelLogs', vals);
+          App.toast('Fuel entry ' + rec.logNo + ' saved and submitted for verification.');
+        } else {
+          if (existing.status === 'rejected' || existing.status === 'draft') vals.status = 'submitted';
+          rec = await DB.update('fuelLogs', existing.id, vals);
+          App.toast('Fuel entry ' + rec.logNo + ' updated.');
+        }
+        closeFn();
+        onSaved();
+      } catch (error) {
+        App.toast(error.message, true);
       }
-      bumpVehicleOdometer(rec.vehicleId, rec.odometer);
-      closeFn();
-      onSaved();
     }
   }
 
   // ---------- verification workflow ----------
 
-  function verifyLog(log, onDone) {
+  async function verifyLog(log, onDone) {
+    if (!App.can('fuel.verify')) return App.toast('You do not have permission to verify fuel entries.', true);
     if (log.needsApproval && !confirm('Entry ' + log.logNo + ' was flagged for approval (' + App.fmtINR(log.amount)
       + ' exceeds threshold). Confirm verification and approval?')) return;
-    DB.update('fuelLogs', log.id, { status: 'verified', verifiedBy: App.currentUser() });
-    App.toast('Fuel entry ' + log.logNo + ' verified.');
-    onDone();
+    try {
+      await DB.update('fuelLogs', log.id, { status: 'verified', verifiedBy: App.currentUser() });
+      await bumpVehicleOdometer(log.vehicleId, log.odometer);
+      App.toast('Fuel entry ' + log.logNo + ' verified.'); onDone();
+    } catch (error) { App.toast(error.message, true); }
   }
-  function rejectLog(log, onDone) {
+  async function rejectLog(log, onDone) {
+    if (!App.can('fuel.verify')) return App.toast('You do not have permission to reject fuel entries.', true);
     const reason = prompt('Reason for rejecting fuel entry ' + log.logNo + ':', '');
     if (reason === null) return;
-    DB.update('fuelLogs', log.id, {
-      status: 'rejected', verifiedBy: App.currentUser(),
-      remarks: (log.remarks ? log.remarks + ' | ' : '') + 'Rejected: ' + (reason || 'no reason given'),
-    });
-    App.toast('Fuel entry ' + log.logNo + ' rejected.', true);
-    onDone();
+    try {
+      await DB.update('fuelLogs', log.id, {
+        status: 'rejected', verifiedBy: App.currentUser(),
+        remarks: (log.remarks ? log.remarks + ' | ' : '') + 'Rejected: ' + (reason || 'no reason given'),
+      });
+      App.toast('Fuel entry ' + log.logNo + ' rejected.', true); onDone();
+    } catch (error) { App.toast(error.message, true); }
   }
-  function deleteLog(log, onDone) {
+  async function deleteLog(log, onDone) {
+    if (!App.can('fuel.enter') && !App.can('fuel.verify')) return App.toast('You do not have permission to delete fuel entries.', true);
     if (!confirm('Delete fuel entry ' + log.logNo + '? This cannot be undone.')) return;
-    DB.softDelete('fuelLogs', log.id);
-    App.toast('Fuel entry ' + log.logNo + ' deleted.');
-    onDone();
+    try {
+      await DB.softDelete('fuelLogs', log.id);
+      App.toast('Fuel entry ' + log.logNo + ' deleted.'); onDone();
+    } catch (error) { App.toast(error.message, true); }
   }
 
   // ---------- render ----------
@@ -351,7 +375,7 @@
 
     function buildEfficiencyTable(vehicles) {
       const rows = vehicles.map(v => {
-        const vlogs = sortedVehicleLogs(v.id).filter(l => l.status !== 'rejected');
+        const vlogs = sortedVehicleLogs(v.id).filter(FleetRules.isTrustedFuelLog);
         if (!vlogs.length) return null;
         const kmplVals = vlogs.map(computeDerived).map(d => d.kmpl).filter(k => k != null);
         const avgKmpl = kmplVals.length ? (kmplVals.reduce((a, b) => a + b, 0) / kmplVals.length) : null;
@@ -430,6 +454,7 @@
     id: 'fuel',
     title: 'Fuel',
     order: 4,
+    roles: ['Transport Manager','Driver','Finance User','Management Viewer'],
     render(container) { render(container); },
   });
 

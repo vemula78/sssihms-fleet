@@ -23,7 +23,7 @@
     return Math.max(0, Math.ceil((new Date(dateOnly(end) + 'T00:00') - new Date(dateOnly(row.downtimeStart) + 'T00:00')) / 86400000) + 1);
   }
   function fuelStats(vehicleId, f) {
-    const logs = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && inRange(r.date, f)).sort((a, b) => num(a.odometer) - num(b.odometer));
+    const logs = DB.list('fuelLogs').filter(r => r.vehicleId === vehicleId && FleetRules.isTrustedFuelLog(r) && inRange(r.date, f)).sort((a, b) => num(a.odometer) - num(b.odometer));
     const qty = logs.reduce((s, r) => s + num(r.qty), 0);
     const amount = logs.reduce((s, r) => s + num(r.amount), 0);
     const km = logs.length > 1 ? Math.max(0, num(logs[logs.length - 1].odometer) - num(logs[0].odometer)) : 0;
@@ -93,7 +93,7 @@
       return { rows, columns: cols([{ key: 'vehicleId', label: 'Vehicle', render: r => linkVehicle(r.vehicleId), csv: r => App.vehicleName(r.vehicleId) }, 'km', 'qty', { key: 'kmpl', label: 'Km/L', num: true, render: r => App.fmtNum(r.kmpl, 1) }, 'benchmark', { key: 'costPerKm', label: 'Fuel cost/km', num: true, render: r => r.costPerKm == null ? '—' : App.fmtINR(r.costPerKm) }]) };
     } },
     { id: 'fuel-vendor-spend', title: 'Fuel vendor spend report', build: f => {
-      const map = {}; DB.list('fuelLogs').filter(r => inRange(r.date, f) && vehicleOk(r.vehicleId, f) && (!f.vendor || r.vendorId === f.vendor)).forEach(r => { const k = r.vendorId || 'none'; map[k] = map[k] || { vendorId: k, qty: 0, amount: 0, bills: 0 }; map[k].qty += num(r.qty); map[k].amount += num(r.amount); map[k].bills++; });
+      const map = {}; DB.list('fuelLogs').filter(r => FleetRules.isTrustedFuelLog(r) && inRange(r.date, f) && vehicleOk(r.vehicleId, f) && (!f.vendor || r.vendorId === f.vendor)).forEach(r => { const k = r.vendorId || 'none'; map[k] = map[k] || { vendorId: k, qty: 0, amount: 0, bills: 0 }; map[k].qty += num(r.qty); map[k].amount += num(r.amount); map[k].bills++; });
       return { rows: Object.values(map), columns: cols([{ key: 'vendorId', label: 'Vendor', render: r => App.esc(App.vendorName(r.vendorId)), csv: r => App.vendorName(r.vendorId) }, 'bills', 'qty', { key: 'amount', label: 'Spend', num: true, render: r => App.fmtINR(r.amount), csv: r => r.amount }]) };
     } },
     { id: 'pm-due', title: 'Preventive maintenance due report', build: f => ({ rows: DB.list('pmSchedules').filter(r => r.status !== 'closed' && vehicleOk(r.vehicleId, f)), columns: cols([
@@ -117,7 +117,7 @@
     { id: 'driver-license-expiry', title: 'Driver license expiry report', build: f => ({ rows: DB.list('drivers').filter(d => inRange(d.licenseExpiry, f) && (!f.department || vehicleOk(d.assignedVehicleId, f))), columns: cols(['driverId', 'name', 'licenseNo', 'licenseClass', { key: 'licenseExpiry', label: 'Expiry', render: r => App.fmtDate(r.licenseExpiry), csv: r => r.licenseExpiry }, { key: 'status', label: 'Status', render: r => { const s = App.docStatus(r.licenseExpiry); return App.badge(s.label, s.cls); }, csv: r => App.docStatus(r.licenseExpiry).label }]) }) },
     { id: 'vendor-performance', title: 'Vendor performance report', build: f => {
       const rows = DB.list('vendors').filter(v => !f.vendor || v.id === f.vendor).map(v => {
-        const fuel = DB.list('fuelLogs').filter(r => r.vendorId === v.id && inRange(r.date, f)).reduce((s, r) => s + num(r.amount), 0);
+        const fuel = DB.list('fuelLogs').filter(r => r.vendorId === v.id && FleetRules.isTrustedFuelLog(r) && inRange(r.date, f)).reduce((s, r) => s + num(r.amount), 0);
         const pm = DB.list('pmRecords').filter(r => r.vendorId === v.id && inRange(r.serviceDate, f)).reduce((s, r) => s + num(r.totalCost), 0);
         const bd = DB.list('breakdowns').filter(r => r.assignedVendorId === v.id && inRange(r.reportedAt, f)).reduce((s, r) => s + num(r.totalCost), 0);
         return { vendorId: v.id, type: v.type, active: v.active ? 'Yes' : 'No', spend: fuel + pm + bd };
@@ -161,5 +161,6 @@
     container.querySelector('#print-report').addEventListener('click', () => window.print());
     container.querySelector('#csv-report').addEventListener('click', () => App.exportCSV(report.id + '.csv', built.columns.map(c => c.label), csvRows(built.columns, built.rows)));
   }
-  App.registerModule({ id: 'reports', title: 'Reports', order: 7, render: render });
+  App.registerModule({ id: 'reports', title: 'Reports', order: 7,
+    roles: ['Transport Manager','Finance User','Management Viewer'], render: render });
 })();

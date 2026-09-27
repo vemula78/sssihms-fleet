@@ -47,7 +47,19 @@
     'resolved': 'resolved', 'closed': 'closed', 'cancelled': 'cancelled',
   };
   const BD_STATUS_FLOW = ['open', 'assigned', 'in progress', 'waiting for parts', 'waiting for approval', 'resolved', 'closed', 'cancelled'];
-  const VEHICLE_STATUS_OPTIONS = ['available', 'restricted use', 'under maintenance', 'off road'];
+  const VEHICLE_STATUS_OPTIONS = ['available', 'under maintenance', 'off road'];
+
+  async function reconcileVehicleStatus(vehicleId, preferredStatus) {
+    const vehicle = DB.get('vehicles', vehicleId);
+    if (!vehicle) return;
+    const status = FleetRules.reconciledVehicleStatus(
+      vehicle,
+      DB.list('trips', t => t.vehicleId === vehicleId),
+      DB.list('breakdowns', b => b.vehicleId === vehicleId),
+      preferredStatus
+    );
+    if (status && status !== vehicle.status) await DB.update('vehicles', vehicleId, { status });
+  }
 
   function vehLink(id) {
     const v = DB.get('vehicles', id);
@@ -118,13 +130,18 @@
       }));
 
       tblHost.querySelectorAll('button[data-act]').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
           const sch = DB.get('pmSchedules', btn.dataset.id);
           if (!sch) return;
           if (btn.dataset.act === 'edit') openScheduleForm(sch);
           else if (btn.dataset.act === 'complete') openCompletionForm(sch);
-          else if (btn.dataset.act === 'toggle') { DB.update('pmSchedules', sch.id, { status: sch.status === 'active' ? 'paused' : 'active' }); App.toast('Schedule updated'); draw(); }
-          else if (btn.dataset.act === 'del') { if (confirm('Delete this PM schedule?')) { DB.softDelete('pmSchedules', sch.id); App.toast('Schedule deleted'); draw(); } }
+          else if (btn.dataset.act === 'toggle') {
+            try { await DB.update('pmSchedules', sch.id, { status: sch.status === 'active' ? 'paused' : 'active' }); App.toast('Schedule updated'); draw(); }
+            catch (error) { App.toast(error.message, true); }
+          } else if (btn.dataset.act === 'del' && confirm('Delete this PM schedule?')) {
+            try { await DB.softDelete('pmSchedules', sch.id); App.toast('Schedule deleted'); draw(); }
+            catch (error) { App.toast(error.message, true); }
+          }
         });
       });
     }
@@ -152,13 +169,15 @@
         actions: [
           { label: 'Cancel', cls: 'ghost' },
           {
-            label: existing ? 'Save' : 'Create', onClick: close => {
+            label: existing ? 'Save' : 'Create', onClick: async close => {
               if (!f.validate()) return;
               const v = f.read();
               if (!v.freqDays && !v.freqKm) { App.toast('Set a frequency in days and/or km', true); return; }
-              if (existing) DB.update('pmSchedules', existing.id, v);
-              else DB.insert('pmSchedules', v);
-              App.toast('PM schedule saved'); close(); draw();
+              try {
+                if (existing) await DB.update('pmSchedules', existing.id, v);
+                else await DB.insert('pmSchedules', v);
+                App.toast('PM schedule saved'); close(); draw();
+              } catch (error) { App.toast(error.message, true); }
             }
           },
         ],
@@ -203,27 +222,28 @@
         actions: [
           { label: 'Cancel', cls: 'ghost' },
           {
-            label: 'Save completion', onClick: close => {
+            label: 'Save completion', onClick: async close => {
               if (!f.validate()) return;
               const v = f.read();
               const totalCost = num(v.partsCost) + num(v.laborCost) + num(v.otherCost) + num(v.taxes) - num(v.discount);
-              DB.insert('pmRecords', Object.assign({}, v, {
-                vehicleId: sch.vehicleId, scheduleRef: sch.id, totalCost,
-              }));
-              const nextDueDate = sch.freqDays ? addDays(v.serviceDate, sch.freqDays) : sch.nextDueDate;
-              const nextDueOdo = sch.freqKm ? Number(v.serviceOdo) + Number(sch.freqKm) : sch.nextDueOdo;
-              DB.update('pmSchedules', sch.id, {
-                lastServiceDate: v.serviceDate, lastServiceOdo: Number(v.serviceOdo),
-                nextDueDate, nextDueOdo,
-              });
-              if (veh) {
-                const patch = {};
-                if (Number(v.serviceOdo) > veh.odometer) patch.odometer = Number(v.serviceOdo);
-                if (v.fitness === 'unfit') patch.status = 'under maintenance';
-                else if (veh.status === 'under maintenance') patch.status = 'available';
-                if (Object.keys(patch).length) DB.update('vehicles', veh.id, patch);
-              }
-              App.toast('PM completion recorded'); close(); draw();
+              try {
+                await DB.insert('pmRecords', Object.assign({}, v, {
+                  vehicleId: sch.vehicleId, scheduleRef: sch.id, totalCost,
+                }));
+                const nextDueDate = sch.freqDays ? addDays(v.serviceDate, sch.freqDays) : sch.nextDueDate;
+                const nextDueOdo = sch.freqKm ? Number(v.serviceOdo) + Number(sch.freqKm) : sch.nextDueOdo;
+                await DB.update('pmSchedules', sch.id, {
+                  lastServiceDate: v.serviceDate, lastServiceOdo: Number(v.serviceOdo), nextDueDate, nextDueOdo,
+                });
+                if (veh) {
+                  const patch = {};
+                  if (Number(v.serviceOdo) > veh.odometer) patch.odometer = Number(v.serviceOdo);
+                  if (Object.keys(patch).length) await DB.update('vehicles', veh.id, patch);
+                  const preferredStatus = v.fitness === 'unfit' ? 'under maintenance' : (veh.status === 'under maintenance' ? 'available' : veh.status);
+                  await reconcileVehicleStatus(veh.id, preferredStatus);
+                }
+                App.toast('PM completion recorded'); close(); draw();
+              } catch (error) { App.toast(error.message, true); }
             }
           },
         ],
@@ -363,20 +383,21 @@
         actions: [
           { label: 'Cancel', cls: 'ghost' },
           {
-            label: 'Create ticket', onClick: close => {
+            label: 'Create ticket', onClick: async close => {
               if (!f.validate()) return;
               const v = f.read();
-              const ticketNo = DB.nextNumber('breakdown', 'BD');
-              const rec = DB.insert('breakdowns', Object.assign({}, v, {
-                ticketNo, status: 'open', downtimeStart: v.reportedAt,
-                laborCost: 0, partsCost: 0, towingCost: 0, otherCost: 0, taxes: 0, totalCost: 0,
-              }));
-              // §5.7: critical/safety or ambulance-readiness impact auto-sets vehicle unavailable
-              let newStatus = v.statusImpact;
-              if (v.readinessImpact && newStatus === 'available') newStatus = 'under maintenance';
-              if ((v.severity === 'critical' || v.safetyImpact) && newStatus === 'available') newStatus = 'under maintenance';
-              if (newStatus && newStatus !== 'available') DB.update('vehicles', v.vehicleId, { status: newStatus });
-              App.toast('Ticket ' + ticketNo + ' created'); close(); draw();
+              try {
+                const ticketNo = await DB.nextNumber('breakdown', 'BD');
+                await DB.insert('breakdowns', Object.assign({}, v, {
+                  ticketNo, status: 'open', downtimeStart: v.reportedAt,
+                  laborCost: 0, partsCost: 0, towingCost: 0, otherCost: 0, taxes: 0, totalCost: 0,
+                }));
+                let newStatus = v.statusImpact;
+                if (v.readinessImpact && newStatus === 'available') newStatus = 'under maintenance';
+                if ((v.severity === 'critical' || v.safetyImpact) && newStatus === 'available') newStatus = 'under maintenance';
+                if (newStatus && newStatus !== 'available') await DB.update('vehicles', v.vehicleId, { status: newStatus });
+                App.toast('Ticket ' + ticketNo + ' created'); close(); draw();
+              } catch (error) { App.toast(error.message, true); }
             }
           },
         ],
@@ -412,7 +433,7 @@
       const actions = [{ label: 'Close (no changes)', cls: 'ghost' }];
       if (canManage || canVendor) {
         actions.push({
-          label: 'Save', onClick: close => {
+          label: 'Save', onClick: async close => {
             if (!f.validate()) return;
             const v = f.read();
             const totalCost = num(v.laborCost) + num(v.partsCost) + num(v.towingCost) + num(v.otherCost) + num(v.taxes);
@@ -425,9 +446,11 @@
             }
             const patch = Object.assign({}, v, { totalCost });
             if (closing && !patch.downtimeEnd) patch.downtimeEnd = DB.todayISO();
-            DB.update('breakdowns', t.id, patch);
-            if (closing && veh) DB.update('vehicles', veh.id, { status: v.finalVehicleStatus });
-            App.toast('Ticket ' + t.ticketNo + ' updated'); close(); draw();
+            try {
+              await DB.update('breakdowns', t.id, patch);
+              if (closing && veh) await reconcileVehicleStatus(veh.id, v.finalVehicleStatus);
+              App.toast('Ticket ' + t.ticketNo + ' updated'); close(); draw();
+            } catch (error) { App.toast(error.message, true); }
           }
         });
       }
@@ -464,6 +487,7 @@
     id: 'maintenance',
     title: 'Maintenance',
     order: 5,
+    roles: ['Transport Manager','Ambulance Coordinator','Maintenance Team','Vendor','Management Viewer'],
     render(container, params) { renderModule(container, params); },
   });
 })();

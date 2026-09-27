@@ -35,11 +35,11 @@
   const PERMS = {
     'masters.edit':      ['Transport Manager'],
     'trips.manage':      ['Transport Manager','Ambulance Coordinator'],
-    'trips.drive':       ['Driver','Transport Manager','Ambulance Coordinator'],
-    'fuel.enter':        ['Driver','Transport Manager'],
+    'trips.drive':       ['Transport Manager','Ambulance Coordinator','Driver'],
+    'fuel.enter':        ['Transport Manager','Driver'],
     'fuel.verify':       ['Transport Manager','Finance User'],
     'maintenance.manage':['Maintenance Team','Transport Manager'],
-    'vendor.update':     ['Vendor','Maintenance Team','Transport Manager'],
+    'vendor.update':     ['Maintenance Team','Transport Manager','Vendor'],
     'finance.view':      ['Finance User','Transport Manager','Management Viewer'],
     'compliance.manage': ['Transport Manager','Maintenance Team'],
     'settings.edit':     [],
@@ -47,13 +47,15 @@
     'readiness.check':   ['Ambulance Coordinator','Driver'],
   };
 
-  let currentRole = localStorage.getItem('sssihms-fleet-role') || 'Fleet Administrator';
+  let identity = null;
 
   const App = {
     registerModule(m) { modules.push(m); },
-    currentRole() { return currentRole; },
-    currentUser() { return currentRole; }, // prototype: user == role
+    currentRole() { return identity ? identity.role : null; },
+    currentUser() { return identity ? identity.displayName : ''; },
+    identity() { return identity; },
     can(action) {
+      const currentRole = App.currentRole();
       if (currentRole === 'Fleet Administrator') return true;
       const allowed = PERMS[action];
       return allowed ? allowed.includes(currentRole) : false;
@@ -124,7 +126,7 @@
       });
       tbl.appendChild(tbody); wrap.appendChild(tbl); return wrap;
     },
-    modal({ title, body, actions }) {
+    modal({ title, body, actions, dismissible = true }) {
       const root = document.getElementById('modal-root');
       const backdrop = App.el('<div class="modal-backdrop"></div>');
       const box = App.el('<div class="modal"><h2>' + App.esc(title) + '</h2><div class="modal-body"></div><div class="modal-actions"></div></div>');
@@ -137,7 +139,7 @@
         b.addEventListener('click', () => a.onClick ? a.onClick(close) : close());
         actEl.appendChild(b);
       });
-      backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+      backdrop.addEventListener('click', e => { if (dismissible && e.target === backdrop) close(); });
       backdrop.appendChild(box); root.appendChild(backdrop);
       return close;
     },
@@ -217,19 +219,31 @@
 
     // ---------- shell ----------
     navigate(hash) { location.hash = hash; },
-    start() {
-      // role switcher
-      const rs = document.getElementById('role-switcher');
-      ROLES.forEach(r => rs.appendChild(new Option(r, r)));
-      rs.value = currentRole;
-      rs.addEventListener('change', () => {
-        currentRole = rs.value; localStorage.setItem('sssihms-fleet-role', currentRole);
-        render();
+    async start() {
+      const main = document.getElementById('app-main');
+      main.innerHTML = '<div class="card loading-card"><p>Connecting securely to the fleet server…</p></div>';
+      try {
+        await DB.init(); identity = DB.currentUser();
+      } catch (error) {
+        if (error.status === 401) { renderLogin(); return; }
+        main.innerHTML = '<div class="card auth-card"><h2>Fleet service unavailable</h2><p class="text-danger">' + App.esc(error.message) + '</p><button class="btn" id="retry-load">Retry</button></div>';
+        document.getElementById('retry-load').addEventListener('click', () => location.reload());
+        return;
+      }
+      const who = document.getElementById('signed-in-user');
+      who.innerHTML = '<strong>' + App.esc(identity.displayName) + '</strong><span>' + App.esc(identity.role) + '</span>';
+      document.getElementById('session-controls').hidden = false;
+      document.getElementById('password-button').addEventListener('click', () => passwordModal(false));
+      document.getElementById('logout-button').addEventListener('click', async () => {
+        try { await DB.logout(); location.replace(location.pathname + location.search); }
+        catch (error) { App.toast(error.message, true); }
       });
       window.addEventListener('hashchange', render);
       render();
+      if (identity.mustChangePassword) passwordModal(true);
 
       function render() {
+        const currentRole = App.currentRole();
         modules.sort((a, b) => (a.order || 99) - (b.order || 99));
         const nav = document.getElementById('app-nav'); nav.innerHTML = '';
         const visible = modules.filter(m => !m.roles || currentRole === 'Fleet Administrator' || m.roles.includes(currentRole));
@@ -250,7 +264,56 @@
         catch (e) { console.error(e); main.innerHTML = '<div class="card"><h3>Error</h3><pre>' + App.esc(e.stack || e.message) + '</pre></div>'; }
       }
     },
+    renderLogin() {
+      renderLogin();
+    },
   };
+
+  function renderLogin() {
+    identity = null;
+    document.getElementById('app-nav').innerHTML = '';
+    document.getElementById('session-controls').hidden = true;
+    const main = document.getElementById('app-main');
+    main.innerHTML = '<section class="card auth-card"><h2>Fleet sign in</h2><p class="text-muted">Use your hospital fleet account to continue.</p><form id="login-form"><div class="field"><label for="login-user">Username</label><input id="login-user" name="username" autocomplete="username" required></div><div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div><p id="login-error" class="text-danger" role="alert"></p><button class="btn" type="submit">Sign in</button></form></section>';
+    const form = document.getElementById('login-form');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = form.querySelector('button'); const errorBox = document.getElementById('login-error');
+      button.disabled = true; errorBox.textContent = '';
+      try {
+        await DB.login(form.username.value.trim(), form.password.value);
+        location.reload();
+      } catch (error) {
+        errorBox.textContent = error.message; button.disabled = false;
+      }
+    });
+    form.username.focus();
+  }
+
+  function passwordModal(required) {
+    const form = App.form([
+      { name: 'currentPassword', label: 'Current password', type: 'password', required: true },
+      { name: 'newPassword', label: 'New password', type: 'password', required: true, hint: 'At least 14 characters, including letters and numbers' },
+      { name: 'confirmPassword', label: 'Confirm new password', type: 'password', required: true },
+    ]);
+    App.modal({
+      title: required ? 'Set a new password to secure this account' : 'Change password', body: form.el,
+      dismissible: !required,
+      actions: [
+        { label: required ? 'Sign out' : 'Cancel', cls: 'ghost', onClick: async close => {
+          if (!required) { close(); return; }
+          try { await DB.logout(); location.reload(); } catch (error) { App.toast(error.message, true); }
+        } },
+        { label: 'Update password', onClick: async close => {
+          if (!form.validate()) return;
+          const values = form.read();
+          if (values.newPassword !== values.confirmPassword) return App.toast('New passwords do not match.', true);
+          try { await DB.changePassword(values.currentPassword, values.newPassword); close(); App.toast('Password updated.'); }
+          catch (error) { App.toast(error.message, true); }
+        } },
+      ],
+    });
+  }
 
   window.App = App;
 })();

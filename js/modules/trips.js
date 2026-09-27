@@ -4,7 +4,7 @@
   const PRIORITIES = ['routine', 'urgent', 'emergency'];
   const CASE_TYPES = ['emergency', 'inter-facility transfer', 'discharge', 'event standby', 'other'];
   const CONDITIONS = ['stable', 'critical', 'deceased', 'other'];
-  const BLOCKED_VEHICLE_STATUSES = ['under maintenance', 'off road', 'retired'];
+  const BLOCKED_VEHICLE_STATUSES = ['restricted use', 'under maintenance', 'off road', 'retired'];
   const CHECKLIST_ITEMS = [
     'Vehicle clean',
     'Fuel above minimum threshold',
@@ -91,9 +91,11 @@
     if (!v) blocks.push('Assigned vehicle is required.');
     if (v && BLOCKED_VEHICLE_STATUSES.includes(v.status)) blocks.push('Vehicle status is ' + v.status + '.');
     if (v && v.type === 'ambulance') {
-      const check = latestReadiness(vehicleId, (startAt || today()).slice(0, 10));
-      if (!check || check.date !== (startAt || today()).slice(0, 10)) blocks.push('Ambulance has no passing readiness checklist for dispatch date.');
+      const dispatchDate = (startAt || today()).slice(0, 10);
+      const check = latestReadiness(vehicleId, dispatchDate);
+      if (!check || check.date !== dispatchDate) blocks.push('Ambulance has no readiness checklist for dispatch date.');
       else if (hasCriticalFailure(check)) blocks.push('Ambulance has failed critical readiness items.');
+      else if (!FleetRules.readinessPassesForDate(check, dispatchDate)) blocks.push('Ambulance readiness checklist is not passing for dispatch date.');
     }
     if (settings.blockNonCompliantVehicles && vehicleId && !vehicleDocsCompliant(vehicleId)) blocks.push('Vehicle has expired critical compliance document.');
     if (settings.blockNonCompliantDrivers && driverId && !driverDocsCompliant(driverId)) blocks.push('Driver has expired license compliance.');
@@ -106,6 +108,17 @@
     if (App.can('override')) return true;
     App.toast(blocks.join(' '), true);
     return null;
+  }
+  async function reconcileVehicleStatus(vehicleId, preferredStatus) {
+    const vehicle = DB.get('vehicles', vehicleId);
+    if (!vehicle) return;
+    const status = FleetRules.reconciledVehicleStatus(
+      vehicle,
+      DB.list('trips', t => t.vehicleId === vehicleId),
+      DB.list('breakdowns', b => b.vehicleId === vehicleId),
+      preferredStatus
+    );
+    if (status && status !== vehicle.status) await DB.update('vehicles', vehicleId, { status });
   }
   function computeAmbulance(raw) {
     if (!raw) return null;
@@ -167,7 +180,7 @@
       body,
       actions: [
         { label: 'Cancel', cls: 'ghost' },
-        { label: existing ? 'Save' : 'Create', onClick(close) {
+        { label: existing ? 'Save' : 'Create', async onClick(close) {
           if (!base.validate() || !amb.validate()) return;
           const data = base.read();
           const vehicle = data.vehicleId ? DB.get('vehicles', data.vehicleId) : null;
@@ -180,9 +193,14 @@
             if (override === null) return;
             if (override) data.overrideReason = 'Override by ' + App.currentUser() + ': ' + blocks.join(' ');
           }
-          if (existing) DB.update('trips', existing.id, data);
-          else DB.insert('trips', Object.assign(data, { tripNo: DB.nextNumber('trip', 'TR'), status: 'requested' }));
-          close(); App.toast('Trip saved.'); renderLast();
+          try {
+            if (existing) await DB.update('trips', existing.id, data);
+            else {
+              const tripNo = await DB.nextNumber('trip', 'TR');
+              await DB.insert('trips', Object.assign(data, { tripNo, status: 'requested' }));
+            }
+            close(); App.toast('Trip saved.'); renderLast();
+          } catch (error) { App.toast(error.message, true); }
         } },
       ],
     });
@@ -221,7 +239,7 @@
       body: form.el,
       actions: [
         { label: 'Cancel', cls: 'ghost' },
-        { label: action.charAt(0).toUpperCase() + action.slice(1), onClick(close) {
+        { label: action.charAt(0).toUpperCase() + action.slice(1), async onClick(close) {
           if (!form.validate()) return;
           const data = form.read();
           const patch = {};
@@ -234,6 +252,8 @@
             Object.assign(patch, data, { status: 'assigned' });
             if (override) patch.overrideReason = 'Override by ' + App.currentUser() + ': ' + blocks.join(' ');
           }
+          let startVehiclePatch = null;
+          let reconcileAfter = null;
           if (action === 'start') {
             const v = DB.get('vehicles', trip.vehicleId);
             if (!v || !trip.driverId) return App.toast('Assign vehicle and driver before starting.', true);
@@ -241,9 +261,9 @@
             const blocks = dispatchBlocks(trip.vehicleId, trip.driverId, data.startAt, null, trip.id);
             const override = requireOverride(blocks);
             if (override === null) return;
-            Object.assign(patch, data, { status: 'started' });
+            Object.assign(patch, data, { status: 'started', preTripVehicleStatus: v.status });
             if (override) patch.overrideReason = 'Override by ' + App.currentUser() + ': ' + blocks.join(' ');
-            DB.update('vehicles', trip.vehicleId, { status: 'on trip', odometer: Math.max(Number(v.odometer || 0), Number(data.startOdo || 0)) });
+            startVehiclePatch = { status: 'on trip', odometer: Math.max(Number(v.odometer || 0), Number(data.startOdo || 0)) };
           }
           if (action === 'complete') {
             const startOdo = Number(trip.startOdo || 0);
@@ -252,11 +272,21 @@
             const distance = Number(data.endOdo) - startOdo;
             Object.assign(patch, data, { status: 'completed', distance });
             const v = DB.get('vehicles', trip.vehicleId);
-            if (v) DB.update('vehicles', v.id, { odometer: Math.max(Number(v.odometer || 0), Number(data.endOdo || 0)), status: 'available' });
+            if (v) patch._vehicleOdometer = Math.max(Number(v.odometer || 0), Number(data.endOdo || 0));
+            reconcileAfter = trip.preTripVehicleStatus || 'available';
           }
-          if (action === 'cancel') Object.assign(patch, { status: 'cancelled', cancelReason: data.cancelReason });
-          DB.update('trips', trip.id, patch);
-          close(); App.toast('Trip updated.'); renderLast();
+          if (action === 'cancel') {
+            Object.assign(patch, { status: 'cancelled', cancelReason: data.cancelReason });
+            if (trip.status === 'started') reconcileAfter = trip.preTripVehicleStatus || 'available';
+          }
+          const vehicleOdometer = patch._vehicleOdometer; delete patch._vehicleOdometer;
+          try {
+            await DB.update('trips', trip.id, patch);
+            if (vehicleOdometer != null) await DB.update('vehicles', trip.vehicleId, { odometer: vehicleOdometer });
+            if (startVehiclePatch) await DB.update('vehicles', trip.vehicleId, startVehiclePatch);
+            if (reconcileAfter) await reconcileVehicleStatus(trip.vehicleId, reconcileAfter);
+            close(); App.toast('Trip updated.'); renderLast();
+          } catch (error) { App.toast(error.message, true); }
         } },
       ],
     });
@@ -284,9 +314,10 @@
       body,
       actions: [
         { label: 'Cancel', cls: 'ghost' },
-        { label: 'Save Check', onClick(close) {
+        { label: 'Save Check', async onClick(close) {
           if (!meta.validate()) return;
           const data = meta.read();
+          if (App.currentRole() === 'Driver') data.checkedByDriverId = App.identity().actorId;
           const items = {};
           list.querySelectorAll('input[type=checkbox]').forEach(i => { items[i.dataset.item] = i.checked; });
           const failedItems = Object.keys(items).filter(k => !items[k]);
@@ -294,37 +325,47 @@
           const criticalFailed = failedItems.filter(i => critical.includes(i));
           const result = failedItems.length ? 'fail' : 'pass';
           const existing = DB.list('readinessChecks', r => r.vehicleId === data.vehicleId && r.date === data.date)[0];
-          const rec = existing
-            ? DB.update('readinessChecks', existing.id, Object.assign(data, { items, failedItems, result }))
-            : DB.insert('readinessChecks', Object.assign(data, { items, failedItems, result }));
-          if (criticalFailed.length) {
-            const v = DB.get('vehicles', data.vehicleId);
-            if (v) DB.update('vehicles', v.id, { status: 'under maintenance' });
-            DB.insert('breakdowns', {
-              ticketNo: DB.nextNumber('breakdown', 'BD'),
-              vehicleId: data.vehicleId,
-              reportedBy: data.checkedBy,
-              reportedAt: data.date + 'T' + nowLocal().slice(11, 16),
-              odometer: v ? v.odometer : null,
-              location: v ? v.baseLocation : null,
-              issueCategory: 'Ambulance readiness failure',
-              description: 'Critical readiness failure: ' + criticalFailed.join(', '),
-              severity: 'high',
-              safetyImpact: true,
-              readinessImpact: true,
-              statusImpact: 'under maintenance',
-              status: 'open',
-              downtimeStart: data.date + 'T' + nowLocal().slice(11, 16),
-              readinessCheckId: rec.id,
-              laborCost: 0,
-              partsCost: 0,
-              towingCost: 0,
-              otherCost: 0,
-              taxes: 0,
-              totalCost: 0,
-            });
-          }
-          close(); App.toast(criticalFailed.length ? 'Readiness failed; breakdown ticket created.' : 'Readiness check saved.'); renderLast();
+          try {
+            const rec = existing
+              ? await DB.update('readinessChecks', existing.id, Object.assign(data, { items, failedItems, result }))
+              : await DB.insert('readinessChecks', Object.assign(data, { items, failedItems, result }));
+            let breakdownCreated = false;
+            if (criticalFailed.length) {
+              const v = DB.get('vehicles', data.vehicleId);
+              if (v) await DB.update('vehicles', v.id, { status: 'under maintenance' });
+              const linkedOpenTicket = DB.list('breakdowns', b => b.readinessCheckId === rec.id && !['closed', 'cancelled'].includes(b.status))[0];
+              if (!linkedOpenTicket) {
+                const ticketNo = await DB.nextNumber('breakdown', 'BD');
+                await DB.insert('breakdowns', {
+                ticketNo,
+                vehicleId: data.vehicleId,
+                reportedBy: data.checkedBy,
+                reportedAt: data.date + 'T' + nowLocal().slice(11, 16),
+                odometer: v ? v.odometer : null,
+                location: v ? v.baseLocation : null,
+                issueCategory: 'Ambulance readiness failure',
+                description: 'Critical readiness failure: ' + criticalFailed.join(', '),
+                severity: 'high',
+                safetyImpact: true,
+                readinessImpact: true,
+                statusImpact: 'under maintenance',
+                status: 'open',
+                downtimeStart: data.date + 'T' + nowLocal().slice(11, 16),
+                readinessCheckId: rec.id,
+                laborCost: 0,
+                partsCost: 0,
+                towingCost: 0,
+                otherCost: 0,
+                taxes: 0,
+                totalCost: 0,
+              });
+                breakdownCreated = true;
+              }
+            }
+            close();
+            App.toast(criticalFailed.length ? (breakdownCreated ? 'Readiness failed; breakdown ticket created.' : 'Readiness failed; existing breakdown ticket retained.') : 'Readiness check saved.');
+            renderLast();
+          } catch (error) { App.toast(error.message, true); }
         } },
       ],
     });
@@ -376,11 +417,12 @@
   }
   function actionButtons(t) {
     const buttons = [];
+    const ownDriverTrip = App.currentRole() !== 'Driver' || (App.identity().actorId && t.driverId === App.identity().actorId);
     if (App.can('trips.manage')) buttons.push('<button class="btn small ghost" data-action="edit" data-id="' + esc(t.id) + '">Edit</button>');
     if (App.can('trips.manage') && t.status === 'requested') buttons.push('<button class="btn small" data-action="approve" data-id="' + esc(t.id) + '">Approve</button>');
     if (App.can('trips.manage') && ['requested', 'approved'].includes(t.status)) buttons.push('<button class="btn small" data-action="assign" data-id="' + esc(t.id) + '">Assign</button>');
-    if (App.can('trips.drive') && ['assigned', 'approved'].includes(t.status)) buttons.push('<button class="btn small" data-action="start" data-id="' + esc(t.id) + '">Start</button>');
-    if (App.can('trips.drive') && t.status === 'started') buttons.push('<button class="btn small" data-action="complete" data-id="' + esc(t.id) + '">Complete</button>');
+    if (App.can('trips.drive') && ownDriverTrip && ['assigned', 'approved'].includes(t.status)) buttons.push('<button class="btn small" data-action="start" data-id="' + esc(t.id) + '">Start</button>');
+    if (App.can('trips.drive') && ownDriverTrip && t.status === 'started') buttons.push('<button class="btn small" data-action="complete" data-id="' + esc(t.id) + '">Complete</button>');
     if (App.can('trips.manage') && !['completed', 'cancelled', 'rejected'].includes(t.status)) buttons.push('<button class="btn small danger" data-action="cancel" data-id="' + esc(t.id) + '">Cancel</button>');
     return buttons.join(' ') || '—';
   }
@@ -410,5 +452,6 @@
     }));
   }
 
-  App.registerModule({ id: 'trips', title: 'Trips & Ambulance', order: 3, render });
+  App.registerModule({ id: 'trips', title: 'Trips & Ambulance', order: 3,
+    roles: ['Transport Manager','Ambulance Coordinator','Driver','Management Viewer'], render });
 })();
